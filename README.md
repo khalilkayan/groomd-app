@@ -2,6 +2,8 @@
 
 Groomd is a functional full-stack beauty and wellness booking MVP designed for the Lebanese market. It was built with Claude Code in VS Code, using vanilla HTML, CSS, JavaScript, and Supabase.
 
+**Live demo:** [Open Groomd](https://khalilkayan.github.io/groomd-app/)
+
 ## Overview
 
 Groomd connects customers with barbershops, salons, nail studios, and spas. Customers browse

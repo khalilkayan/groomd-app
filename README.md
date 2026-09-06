@@ -7,9 +7,9 @@ Groomd is a functional full-stack beauty and wellness booking MVP designed for t
 Groomd connects customers with barbershops, salons, nail studios, and spas. Customers browse
 businesses, pick a service, staff member, date, and available time, and confirm a booking.
 Business owners sign in to a dashboard scoped to their own business, where they review bookings,
-update their status, add walk-in bookings by hand, and block slots they are unavailable for. It
-is a portfolio prototype built around a real end-to-end booking flow, backed by a real database
-with real authorization rules, rather than a static UI mockup.
+update their status, create manual bookings, and block slots they are unavailable for. It is a
+portfolio prototype centered on an end-to-end booking workflow backed by Supabase and
+database-enforced authorization, rather than a static UI mockup.
 
 ## Key Features
 
@@ -57,13 +57,14 @@ that state. Data reaches Supabase two ways:
    query, not a Supabase Realtime subscription.
 
 Authorization is not enforced in the browser. The client sends a request; PostgreSQL decides
-what it may see or change, through RLS policies and column-level grants. The owner dashboard,
-for instance, asks `business_owners` for its businesses without a user filter, and RLS returns
-only the caller's rows. If Supabase is unreachable, bundled demo data keeps the UI rendering.
+what it may see or change, through RLS policies and least-privilege table and column grants. The
+owner dashboard, for instance, asks `business_owners` for its businesses without a user filter,
+and RLS returns only the caller's rows. If Supabase is unreachable, bundled demo data keeps the
+UI rendering.
 
 ## Running Locally
 
-The app is static, so any local HTTP server works. From the repository root:
+The frontend is static, so any local HTTP server works. From the repository root:
 
 ```bash
 python3 -m http.server 5500
@@ -103,7 +104,7 @@ The full model is documented in [docs/security.md](docs/security.md). The rules 
 Groomd is a functional MVP and portfolio prototype. It has not been commercially launched and is
 not presented as production-ready. Its shape reflects deliberate scoping, with known next steps:
 
-- The frontend intentionally remains one `index.html` file; modularising it behind a build
+- The frontend intentionally remains one `index.html` file; modularizing it behind a build
   pipeline is the natural next step.
 - No real-payment processor is integrated; payment method is a label on a booking, so no money
   moves and no payment data is handled.

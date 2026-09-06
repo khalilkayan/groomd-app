@@ -16,11 +16,11 @@ database decides the answer.
 
 The browser holds a Supabase **publishable (anon) key**. That key is public by design: it
 identifies the anonymous client and provides exactly the access allowed by the project's
-database grants and Row Level Security policies — no more, and no less. It is not a secret, and
-it is not a credential to be protected; it is also not inert, which is why the grants behind it
-matter so much. No service-role key exists anywhere in client code, and adding one would defeat
-the entire model. When a user is signed in, requests carry that user's access token instead, and
-the database evaluates policies against their identity.
+database grants and Row Level Security policies — no more, and no less. It is not a secret, but
+it is also not inert, which is why the database grants and RLS policies behind it matter. No
+service-role key exists anywhere in client code, and adding one would defeat the entire model.
+When a user is signed in, requests carry that user's access token instead, and the database
+evaluates policies against their identity.
 
 The applied privilege, policy, constraint, and function changes described below are recorded in
 [`supabase/security-hardening.sql`](../supabase/security-hardening.sql), so the claims in this
@@ -131,8 +131,9 @@ Cancelled bookings fall outside the index predicate, so a freed time becomes boo
 
 ## Client-side output escaping
 
-The UI is built by string interpolation into HTML, so every untrusted value is escaped at the
-point of interpolation. Two helpers handle this:
+Because the UI renders dynamic values through HTML string interpolation, customer-writable,
+authentication-derived, and booking values must be escaped at the relevant rendering boundaries.
+Two helpers support this:
 
 - **`esc(value)`** — escapes `&`, `<`, `>`, `"`, and `'` for HTML text nodes and quoted attribute
   values. `null` and `undefined` become empty strings, while `0`, `false`, and `''` are

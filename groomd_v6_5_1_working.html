@@ -32,6 +32,26 @@ textarea{resize:none}
 <script>
 
 const G='#B8965A',DK='#1A1611',CR='#FAF7F2',SF='#F0EBE3',BD='#DDD5C8',MU='#A8997E';
+
+/* Escape untrusted text for HTML text nodes and quoted attribute values.
+   null/undefined become '' but every other value (0, false, '') is preserved. */
+function esc(v){
+  if(v===null||v===undefined) return '';
+  return String(v)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+/* Escape a value that lands inside a single-quoted JS string which is itself
+   inside a double-quoted HTML attribute (e.g. onclick="fn('HERE')").
+   JS-escape first, then HTML-escape, so the attribute decode step can't
+   re-introduce a quote that closes the JS string. */
+function escJs(v){
+  if(v===null||v===undefined) return '';
+  return esc(String(v).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/[\r\n]/g,' '));
+}
 const SUPABASE_URL = 'https://gfbxzbsvefraipeadxqm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_0nzT6v_M9pl1zTvZCi3Hsw_VW1YL-Sn';
 const supabaseAuthClient = (window.supabase && typeof window.supabase.createClient === 'function')
@@ -625,7 +645,7 @@ async function insertSupabaseRow(tableName, payload, prefer = 'return=representa
   const text = await res.text();
   const data = text ? JSON.parse(text) : [];
 
-  console.log(`Inserted into ${tableName}:`, data);
+  console.log(`Inserted into ${tableName}: rows=${Array.isArray(data) ? data.length : 0}`);
   return data;
 }
 async function updateSupabaseRow(tableName, query, payload) {
@@ -643,7 +663,7 @@ async function updateSupabaseRow(tableName, query, payload) {
     throw error;
   }
   const data = await res.json();
-  console.log(`Updated ${tableName}:`, data);
+  console.log(`Updated ${tableName}: rows=${Array.isArray(data) ? data.length : 0}`);
   return data;
 }
 async function initAuth() {
@@ -659,7 +679,7 @@ async function initAuth() {
     syncUserProfileFromAuth();
 
     supabaseAuthClient.auth.onAuthStateChange((event, session) => {
-      console.log('AUTH_STATE_CHANGED:', event, session?.user?.email || null);
+      console.log('AUTH_STATE_CHANGED:', event, session ? 'signed-in' : 'signed-out');
       authSession = session || null;
       authUser = session?.user || null;
       syncUserProfileFromAuth();
@@ -798,30 +818,29 @@ async function saveBookingToBackend(booking) {
     note: bkSel.note || null
   };
   if (!payload.business_id || !payload.business_name || !payload.service_name || !payload.booking_date || !payload.booking_time) {
-    console.warn('BOOKING_PAYLOAD_MISSING_REQUIRED_FIELDS:', payload);
+    console.warn('BOOKING_PAYLOAD_MISSING_REQUIRED_FIELDS:',
+      ['business_id','business_name','service_name','booking_date','booking_time'].filter(k => !payload[k]).join(','));
     showToast('Booking saved locally');
     return null;
   }
-  console.log('BOOKING_INSERT_PAYLOAD:', payload);
   try {
     const savedBooking = await insertSupabaseRow(
   'bookings',
   payload,
   authUser ? 'return=representation' : 'return=minimal'
 );
-    console.log('BOOKING_INSERT_RESULT:', savedBooking);
-    console.log('BOOKING_SAVED_TO_SUPABASE:', savedBooking);
+    console.log('BOOKING_SAVED_TO_SUPABASE: rows=' + (Array.isArray(savedBooking) ? savedBooking.length : 0));
     showToast('Booking saved');
     return savedBooking?.[0] || null;
   } catch (err) {
     const msg = err?.message || String(err);
     const raw = err?.responseText || '';
     if (err?.status === 409 || raw.includes('23505') || raw.includes('bookings_no_double_active_slot') || msg.includes('23505')) {
-      console.warn('BOOKING_SLOT_TAKEN: ' + msg);
+      console.warn('BOOKING_SLOT_TAKEN');
       showToast('This slot is already booked');
       return 'slot_taken';
     }
-    console.warn('BOOKING_SAVE_ERROR: ' + msg);
+    console.warn('BOOKING_SAVE_ERROR: status=' + (err?.status || 'unknown'));
     showToast('Booking saved locally');
     return null;
   }
@@ -866,7 +885,7 @@ async function loadTakenSlotsForSelection(businessId, staffName, bookingDate) {
 
     if (!res.ok) {
       const text = await res.text();
-      console.warn('TAKEN_SLOTS_ERROR:', res.status, text);
+      console.warn('TAKEN_SLOTS_ERROR: status=' + res.status);
 
       if (takenSlotsKey === key) {
         takenSlots = [];
@@ -918,7 +937,7 @@ async function isSlotTakenBackend(businessId, staffName, bookingDate, bookingTim
 
     if (!res.ok) {
       const text = await res.text();
-      console.warn('SLOT_CHECK_ERROR:', res.status, text);
+      console.warn('SLOT_CHECK_ERROR: status=' + res.status);
       return false;
     }
 
@@ -938,7 +957,7 @@ async function isSlotTakenBackend(businessId, staffName, bookingDate, bookingTim
 }
 async function cancelBookingBackend(booking) {
   if (!booking?.backendId && !booking?.id) {
-    console.warn('CANCEL_BOOKING_MISSING_ID:', booking);
+    console.warn('CANCEL_BOOKING_MISSING_ID');
     return null;
   }
   const backendId = booking.backendId || booking.id;
@@ -948,7 +967,7 @@ async function cancelBookingBackend(booking) {
       `?id=eq.${encodeURIComponent(backendId)}`,
       { status: 'cancelled' }
     );
-    console.log('BOOKING_CANCELLED_IN_SUPABASE:', updated);
+    console.log('BOOKING_CANCELLED_IN_SUPABASE: rows=' + (Array.isArray(updated) ? updated.length : 0));
     showToast('Booking cancelled');
     return updated?.[0] || null;
   } catch (err) {
@@ -969,11 +988,11 @@ function formatBookingDateLabel(isoDate) {
   }
 }
 async function loadMyBookingsFromBackend() {
-  console.log('MY_BOOKINGS_LOAD_USER:', authUser?.id || 'guest');
+  console.log('MY_BOOKINGS_LOAD_USER:', authUser ? 'signed-in' : 'guest');
   // Guest: do NOT fetch global bookings (that would expose every guest's rows).
   // Keep whatever bookings exist locally in this session.
   if (!authUser) {
-    console.log('MY_BOOKINGS_ROWS:', []);
+    console.log('MY_BOOKINGS_ROWS: rows=0');
     render();
     return;
   }
@@ -982,7 +1001,7 @@ async function loadMyBookingsFromBackend() {
       'bookings',
       `?select=*&customer_id=eq.${encodeURIComponent(authUser.id)}&order=created_at.desc&limit=50`
     );
-    console.log('MY_BOOKINGS_ROWS:', rows);
+    console.log('MY_BOOKINGS_ROWS: rows=' + (Array.isArray(rows) ? rows.length : 0));
 
     userBookings = (rows || []).map(row => {
       const biz = getBusinesses().find(b => b.id === row.business_id);
@@ -1105,7 +1124,7 @@ async function updateDashboardBookingStatus(id, newStatus) {
       throw new Error('Dashboard status update returned no rows. Wrong backend id?');
     }
     booking.status = newStatus;
-    console.log('DASHBOARD_BOOKING_STATUS_UPDATED:', updated);
+    console.log('DASHBOARD_BOOKING_STATUS_UPDATED: rows=' + updated.length);
     showToast(`Booking ${newStatus}`);
     await loadDashboardBookings(dashboardBusinessId);
     await loadMyBookingsFromBackend();
@@ -1167,9 +1186,8 @@ async function saveOwnerManualBooking() {
       payment_method: 'manual',
       note: note
     };
-    console.log('OWNER_MANUAL_BOOKING_PAYLOAD:', payload);
     const saved = await insertSupabaseRow('bookings', payload, 'return=representation');
-    console.log('OWNER_MANUAL_BOOKING_SAVED:', saved);
+    console.log('OWNER_MANUAL_BOOKING_SAVED: rows=' + (Array.isArray(saved) ? saved.length : 0));
     showToast(mode === 'block' ? 'Slot blocked' : 'Booking added');
     ownerBookingOpen = false;
     ownerBookingMode = 'manual';
@@ -1185,7 +1203,7 @@ async function saveOwnerManualBooking() {
     await loadDashboardBookings(dashboardBusinessId);
     render();
   } catch (err) {
-    console.warn('OWNER_MANUAL_BOOKING_ERROR:', err?.message || String(err));
+    console.warn('OWNER_MANUAL_BOOKING_ERROR: status=' + (err?.status || 'unknown'));
     ownerBookingSaving = false;
     showToast('Could not save booking');
     render();
@@ -1196,7 +1214,6 @@ function ownerBookingForm() {
   const staffList = getBusinessStaff(dashboardBusinessId) || [];
   const isBlock = ownerBookingMode === 'block';
   const tslots = [...TSLOTS.Morning, ...TSLOTS.Afternoon, ...TSLOTS.Evening];
-  const esc = (v)=>String(v||'').replace(/"/g,'&quot;');
   return `<div style="background:${SF};border:1px solid ${BD};border-radius:16px;padding:15px;margin-bottom:16px">
     <div style="display:flex;background:${CR};border:1px solid ${BD};border-radius:12px;padding:4px;margin-bottom:14px">
       <div class="tap" onclick="ownerBookingMode='manual';render()" style="flex:1;text-align:center;padding:8px;border-radius:9px;background:${!isBlock?DK:'transparent'};cursor:pointer"><span style="font-size:11.5px;color:${!isBlock?CR:MU};font-weight:600">Manual Booking</span></div>
@@ -1205,14 +1222,14 @@ function ownerBookingForm() {
     ${!isBlock?`<div style="margin-bottom:12px">
       <div style="font-size:9.5px;color:${G};font-weight:700;letter-spacing:0.08em;margin-bottom:6px">SERVICE</div>
       <div class="sx" style="display:flex;gap:7px">
-        ${svcList.length?svcList.map((s,i)=>`<div class="tap" onclick="ownerBookingService=${i};render()" style="flex-shrink:0;background:${ownerBookingService===i?DK:CR};border:1px solid ${ownerBookingService===i?DK:BD};border-radius:10px;padding:7px 11px;cursor:pointer"><span style="font-size:11px;color:${ownerBookingService===i?CR:DK};font-weight:600;white-space:nowrap">${s.name}</span><span style="font-size:9px;color:${ownerBookingService===i?G:MU};margin-left:6px">${s.price||''}</span></div>`).join(''):`<span style="font-size:11px;color:${MU}">No services listed</span>`}
+        ${svcList.length?svcList.map((s,i)=>`<div class="tap" onclick="ownerBookingService=${i};render()" style="flex-shrink:0;background:${ownerBookingService===i?DK:CR};border:1px solid ${ownerBookingService===i?DK:BD};border-radius:10px;padding:7px 11px;cursor:pointer"><span style="font-size:11px;color:${ownerBookingService===i?CR:DK};font-weight:600;white-space:nowrap">${esc(s.name)}</span><span style="font-size:9px;color:${ownerBookingService===i?G:MU};margin-left:6px">${esc(s.price||'')}</span></div>`).join(''):`<span style="font-size:11px;color:${MU}">No services listed</span>`}
       </div>
     </div>`:`<div style="margin-bottom:12px"><div style="font-size:9.5px;color:${G};font-weight:700;letter-spacing:0.08em;margin-bottom:6px">SERVICE</div><div style="background:${CR};border:1px solid ${BD};border-radius:10px;padding:9px 12px;font-size:12px;color:${DK};font-weight:600">Blocked Slot</div></div>`}
     <div style="margin-bottom:12px">
       <div style="font-size:9.5px;color:${G};font-weight:700;letter-spacing:0.08em;margin-bottom:6px">STAFF</div>
       <div class="sx" style="display:flex;gap:7px">
         <div class="tap" onclick="ownerBookingStaff=-1;render()" style="flex-shrink:0;background:${ownerBookingStaff===-1?DK:CR};border:1px solid ${ownerBookingStaff===-1?DK:BD};border-radius:10px;padding:7px 11px;cursor:pointer"><span style="font-size:11px;color:${ownerBookingStaff===-1?CR:DK};font-weight:600">Any</span></div>
-        ${staffList.map((s,i)=>`<div class="tap" onclick="ownerBookingStaff=${i};render()" style="flex-shrink:0;background:${ownerBookingStaff===i?DK:CR};border:1px solid ${ownerBookingStaff===i?DK:BD};border-radius:10px;padding:7px 11px;cursor:pointer"><span style="font-size:11px;color:${ownerBookingStaff===i?CR:DK};font-weight:600;white-space:nowrap">${s.name}</span></div>`).join('')}
+        ${staffList.map((s,i)=>`<div class="tap" onclick="ownerBookingStaff=${i};render()" style="flex-shrink:0;background:${ownerBookingStaff===i?DK:CR};border:1px solid ${ownerBookingStaff===i?DK:BD};border-radius:10px;padding:7px 11px;cursor:pointer"><span style="font-size:11px;color:${ownerBookingStaff===i?CR:DK};font-weight:600;white-space:nowrap">${esc(s.name)}</span></div>`).join('')}
       </div>
     </div>
     <div style="margin-bottom:12px">
@@ -1286,8 +1303,8 @@ function businessDashboardScreen() {
       <div style="font-size:10px;color:${G};font-weight:700;letter-spacing:0.12em;margin-bottom:9px">SELECT BUSINESS</div>
       <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:16px">
         ${businesses.map(b=>`<div class="tap" onclick="dashboardBusinessId=${b.id};loadDashboardBookings(${b.id})" style="flex-shrink:0;background:${b.id===dashboardBusinessId?DK:CR};border:1.5px solid ${b.id===dashboardBusinessId?DK:BD};border-radius:12px;padding:10px 14px;cursor:pointer">
-          <div style="font-size:12px;color:${b.id===dashboardBusinessId?CR:DK};font-weight:600;white-space:nowrap">${b.name}</div>
-          <div style="font-size:9px;color:${b.id===dashboardBusinessId?G:MU};margin-top:2px">${b.loc||''}</div>
+          <div style="font-size:12px;color:${b.id===dashboardBusinessId?CR:DK};font-weight:600;white-space:nowrap">${esc(b.name)}</div>
+          <div style="font-size:9px;color:${b.id===dashboardBusinessId?G:MU};margin-top:2px">${esc(b.loc||'')}</div>
         </div>`).join('')}
       </div>
       <div class="tap" onclick="ownerBookingOpen=!ownerBookingOpen;render()" style="background:${ownerBookingOpen?SF:DK};border:1px solid ${ownerBookingOpen?BD:DK};border-radius:13px;padding:12px;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:${ownerBookingOpen?'12px':'16px'};cursor:pointer">
@@ -1322,20 +1339,20 @@ function businessDashboardScreen() {
         const hasActions = canConfirm||canComplete||canCancel;
         return `<div style="background:${CR};border:1px solid ${BD};border-radius:16px;padding:14px;margin-bottom:12px;box-shadow:0 3px 12px rgba(0,0,0,0.05)">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:9px">
-            <div style="font-size:15px;color:${DK};font-family:Georgia,serif">${b.service}</div>
-            <div style="background:${sc};border-radius:20px;padding:3px 10px"><span style="font-size:9px;color:${CR};font-weight:700;letter-spacing:0.05em;text-transform:uppercase">${b.status}</span></div>
+            <div style="font-size:15px;color:${DK};font-family:Georgia,serif">${esc(b.service)}</div>
+            <div style="background:${sc};border-radius:20px;padding:3px 10px"><span style="font-size:9px;color:${CR};font-weight:700;letter-spacing:0.05em;text-transform:uppercase">${esc(b.status)}</span></div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:${hasActions||b.note?'11px':'0'}">
             ${[['Customer',b.customerName||'Guest'],['Staff',b.staff],['Date',b.date],['Time',b.time],['Price',b.price],['Payment',b.payment],['Phone',b.customerPhone||'—'],['Email',b.customerEmail||'—']].map(([k,v])=>`<div style="display:flex;flex-direction:column">
               <span style="font-size:8.5px;color:${MU};letter-spacing:0.06em">${k.toUpperCase()}</span>
-              <span style="font-size:12px;color:${DK};font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v||'—'}</span>
+              <span style="font-size:12px;color:${DK};font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v||'—')}</span>
             </div>`).join('')}
           </div>
-          ${b.note?`<div style="background:${SF};border-radius:9px;padding:8px 10px;margin-bottom:${hasActions?'11px':'0'}"><span style="font-size:11px;color:${MU}">Note: ${b.note}</span></div>`:''}
+          ${b.note?`<div style="background:${SF};border-radius:9px;padding:8px 10px;margin-bottom:${hasActions?'11px':'0'}"><span style="font-size:11px;color:${MU}">Note: ${esc(b.note)}</span></div>`:''}
           ${hasActions?`<div style="display:flex;gap:7px;border-top:1px solid ${BD};padding-top:11px">
-            ${canConfirm?`<div class="tap" onclick="event.stopPropagation();updateDashboardBookingStatus('${b.backendId||b.id}','confirmed')" style="flex:1;background:${DK};border-radius:10px;padding:9px;text-align:center;font-size:11px;color:${CR};font-weight:600;cursor:pointer">Confirm</div>`:''}
-            ${canComplete?`<div class="tap" onclick="event.stopPropagation();updateDashboardBookingStatus('${b.backendId||b.id}','completed')" style="flex:1;background:#E8F5EE;border:1px solid #BFE3CE;border-radius:10px;padding:9px;text-align:center;font-size:11px;color:#2E7D52;font-weight:600;cursor:pointer">Complete</div>`:''}
-            ${canCancel?`<div class="tap" onclick="event.stopPropagation();updateDashboardBookingStatus('${b.backendId||b.id}','cancelled')" style="flex:1;background:#FFF5F5;border:1px solid #F0D0D0;border-radius:10px;padding:9px;text-align:center;font-size:11px;color:#C0392B;font-weight:600;cursor:pointer">Cancel</div>`:''}
+            ${canConfirm?`<div class="tap" onclick="event.stopPropagation();updateDashboardBookingStatus('${escJs(b.backendId||b.id)}','confirmed')" style="flex:1;background:${DK};border-radius:10px;padding:9px;text-align:center;font-size:11px;color:${CR};font-weight:600;cursor:pointer">Confirm</div>`:''}
+            ${canComplete?`<div class="tap" onclick="event.stopPropagation();updateDashboardBookingStatus('${escJs(b.backendId||b.id)}','completed')" style="flex:1;background:#E8F5EE;border:1px solid #BFE3CE;border-radius:10px;padding:9px;text-align:center;font-size:11px;color:#2E7D52;font-weight:600;cursor:pointer">Complete</div>`:''}
+            ${canCancel?`<div class="tap" onclick="event.stopPropagation();updateDashboardBookingStatus('${escJs(b.backendId||b.id)}','cancelled')" style="flex:1;background:#FFF5F5;border:1px solid #F0D0D0;border-radius:10px;padding:9px;text-align:center;font-size:11px;color:#C0392B;font-weight:600;cursor:pointer">Cancel</div>`:''}
           </div>`:''}
         </div>`;
       }).join('')}
@@ -1352,29 +1369,32 @@ function currentTeam(){ const b = currentBiz(); return getBusinessStaff(b.id) ||
 
 /* ── Toast ── */
 let toastTimer=null;
+/* Marks static markup written in this file as safe for showToast's icon slot.
+   Anything not wrapped this way is rendered as plain text. */
+function trustedIcon(html){return {html:String(html)};}
 function isTBD(v){const s=(v==null?'':String(v)).trim();return s===''||s.toUpperCase()==='TBD';}
 function openMaps(name,addr){
   const query=encodeURIComponent(name+', '+addr);
   window.open('https://www.google.com/maps/search/?api=1&query='+query,'_blank');
-  showToast('Opening Maps…','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>');
+  showToast('Opening Maps…',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>'));
 }
 function openWhatsApp(phone,msg){
   if(isTBD(phone)){showToast('Contact coming soon','');return;}
   const num=(phone||'').replace(/[^0-9]/g,'');
   const text=encodeURIComponent(msg||'');
   window.open('https://wa.me/'+num+(text?'?text='+text:''),'_blank');
-  showToast('Opening WhatsApp…','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.37 2 2 0 0 1 3.58 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.74a16 16 0 0 0 6.29 6.29l.78-.78a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>');
+  showToast('Opening WhatsApp…',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.37 2 2 0 0 1 3.58 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.74a16 16 0 0 0 6.29 6.29l.78-.78a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>'));
 }
 function openInstagram(handle){
   if(isTBD(handle)){showToast('Instagram coming soon','');return;}
   const user=(handle||'').replace('@','').trim();
   window.open('https://instagram.com/'+user,'_blank');
-  showToast('Opening Instagram…','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>');
+  showToast('Opening Instagram…',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>'));
 }
 function callBiz(phone){
   if(isTBD(phone)){showToast('Contact coming soon','');return;}
   window.open('tel:'+(phone||'').replace(/\s/g,''),'_self');
-  showToast('Calling…','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.37 2 2 0 0 1 3.58 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.74a16 16 0 0 0 6.29 6.29l.78-.78a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>');
+  showToast('Calling…',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.37 2 2 0 0 1 3.58 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.74a16 16 0 0 0 6.29 6.29l.78-.78a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>'));
 }
 
 function toggleBookingReminder(){
@@ -1394,7 +1414,17 @@ function showToast(msg,icon=''){
   if(!t){t=document.createElement('div');t.id='glamo-toast';
     t.style.cssText='position:fixed;bottom:110px;left:50%;transform:translateX(-50%) translateY(20px);background:#1A1611;color:#FAF7F2;padding:11px 20px;border-radius:30px;font-size:12px;font-weight:600;font-family:system-ui;letter-spacing:0.04em;z-index:9999;display:flex;align-items:center;gap:8px;box-shadow:0 8px 28px rgba(0,0,0,0.3);border:1px solid rgba(184,150,90,0.3);opacity:0;transition:all .25s ease;white-space:nowrap;pointer-events:none';
     document.body.appendChild(t);}
-  t.innerHTML=(icon?`<span style="font-size:14px">${icon}</span> `:'') + msg;
+  while(t.firstChild) t.removeChild(t.firstChild);
+  if(icon){
+    const s=document.createElement('span');
+    s.style.fontSize='14px';
+    // Only trustedIcon() markup reaches innerHTML; any plain value stays text.
+    if(typeof icon==='object' && typeof icon.html==='string') s.innerHTML=icon.html;
+    else s.textContent=String(icon);
+    t.appendChild(s);
+    t.appendChild(document.createTextNode(' '));
+  }
+  t.appendChild(document.createTextNode(msg===null||msg===undefined?'':String(msg)));
   t.style.opacity='1'; t.style.transform='translateX(-50%) translateY(0)';
   if(toastTimer) clearTimeout(toastTimer);
   toastTimer=setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(12px)';},2200);
@@ -1652,9 +1682,9 @@ function scHome(){
                   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${n.unread?G:MU}" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`}
                 </div>
                 <div style="flex:1;min-width:0">
-                  <div style="font-size:12px;color:${DK};font-weight:${n.unread?700:500};margin-bottom:2px">${n.title}</div>
-                  <div style="font-size:11px;color:${MU};line-height:1.5;margin-bottom:3px">${n.body}</div>
-                  <div style="font-size:10px;color:${n.unread?G:'#BFBAAF'};font-weight:${n.unread?600:400}">${n.time}</div>
+                  <div style="font-size:12px;color:${DK};font-weight:${n.unread?700:500};margin-bottom:2px">${esc(n.title)}</div>
+                  <div style="font-size:11px;color:${MU};line-height:1.5;margin-bottom:3px">${esc(n.body)}</div>
+                  <div style="font-size:10px;color:${n.unread?G:'#BFBAAF'};font-weight:${n.unread?600:400}">${esc(n.time)}</div>
                 </div>
                 ${n.unread?`<div style="width:7px;height:7px;border-radius:50%;background:${G};flex-shrink:0;margin-top:4px"></div>`:''}
               </div>`).join('')}
@@ -1669,7 +1699,7 @@ function scHome(){
           font-style:italic;margin-bottom:3px">${greeting},</div>
         <div style="font-size:27px;color:${DK};font-family:Georgia,serif;
           letter-spacing:-0.3px;line-height:1.1;margin-bottom:8px">
-          ${firstName}<span style="color:${G}">.</span>
+          ${esc(firstName)}<span style="color:${G}">.</span>
         </div>
         <div class="tap" onclick="S.screen='location';render()"
           style="display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -1730,10 +1760,10 @@ function scHome(){
           </div>
           <div style="flex:1;min-width:0">
             <div style="font-size:15px;color:${CR};font-family:Georgia,serif;margin-bottom:2px">
-              ${nextBook.business}
+              ${esc(nextBook.business)}
             </div>
             <div style="font-size:11px;color:rgba(250,247,242,0.45);margin-bottom:5px">
-              ${nextBook.service} · ${nextBook.staff}
+              ${esc(nextBook.service)} · ${esc(nextBook.staff)}
             </div>
             <div style="display:flex;align-items:center;gap:4px">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="${G}" stroke-width="2">
@@ -1743,7 +1773,7 @@ function scHome(){
                 <line x1="3" y1="10" x2="21" y2="10"/>
               </svg>
               <span style="font-size:11px;color:${G};font-weight:600">
-                ${nextBook.date} · ${nextBook.time}
+                ${esc(nextBook.date)} · ${esc(nextBook.time)}
               </span>
             </div>
           </div>
@@ -2428,10 +2458,10 @@ function scBooking(){
     <div style="flex:1;overflow-y:auto;padding:16px 22px 100px">
       <div style="background:${DK};border-radius:16px;padding:16px 18px;margin-bottom:20px">
         <div style="font-size:9.5px;color:${G};font-weight:700;letter-spacing:0.12em;margin-bottom:12px">BOOKING SUMMARY</div>
-        ${[['Service',currentServices()[bkSel.service]?.name],['Staff Member',bkSel.staff===-1?'Any Available':currentTeam()[bkSel.staff]?.name],['Date & Time',`${DATES[bkSel.date]?.sub} at ${bkSel.slot}`],['Duration',currentServices()[bkSel.service]?.time],['Price',currentServices()[bkSel.service]?.price]].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(250,247,242,0.07)"><span style="font-size:11px;color:rgba(250,247,242,0.4)">${k}</span><span style="font-size:11.5px;color:${CR};font-weight:600">${v||'—'}</span></div>`).join('')}
+        ${[['Service',currentServices()[bkSel.service]?.name],['Staff Member',bkSel.staff===-1?'Any Available':currentTeam()[bkSel.staff]?.name],['Date & Time',`${DATES[bkSel.date]?.sub} at ${bkSel.slot}`],['Duration',currentServices()[bkSel.service]?.time],['Price',currentServices()[bkSel.service]?.price]].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(250,247,242,0.07)"><span style="font-size:11px;color:rgba(250,247,242,0.4)">${k}</span><span style="font-size:11.5px;color:${CR};font-weight:600">${esc(v||'—')}</span></div>`).join('')}
       </div>
       <div style="font-size:10.5px;color:${G};font-weight:700;letter-spacing:0.1em;margin-bottom:11px">YOUR INFO</div>
-      ${[['Full Name',userProfile.name||'—'],['Phone',userProfile.phone?'+961 '+userProfile.phone:'—'],['Email',userProfile.email||'—']].map(([l,v])=>`<div style="background:${CR};border:1px solid ${BD};border-radius:13px;padding:12px 15px;margin-bottom:9px"><div style="font-size:9.5px;color:${MU};font-weight:600;letter-spacing:0.07em;margin-bottom:4px">${l.toUpperCase()}</div><div style="font-size:14px;color:${DK}">${v}</div></div>`).join('')}
+      ${[['Full Name',userProfile.name||'—'],['Phone',userProfile.phone?'+961 '+userProfile.phone:'—'],['Email',userProfile.email||'—']].map(([l,v])=>`<div style="background:${CR};border:1px solid ${BD};border-radius:13px;padding:12px 15px;margin-bottom:9px"><div style="font-size:9.5px;color:${MU};font-weight:600;letter-spacing:0.07em;margin-bottom:4px">${l.toUpperCase()}</div><div style="font-size:14px;color:${DK}">${esc(v)}</div></div>`).join('')}
       <div style="font-size:10.5px;color:${G};font-weight:700;letter-spacing:0.1em;margin:16px 0 11px">PAYMENT METHOD</div>
       ${[['cash','Cash in Person','Pay in person on arrival'],['card','Card on App','Pay securely now · Visa, MC, Amex']].map(([id,label,desc])=>`<div class="tap" onclick="bkSel.payment='${id}';render()" style="background:${bkSel.payment===id?DK:CR};border:1.5px solid ${bkSel.payment===id?DK:BD};border-radius:14px;padding:14px 15px;display:flex;align-items:center;gap:13px;margin-bottom:9px;transition:all .2s">
         <div style="width:42px;height:42px;border-radius:12px;background:${bkSel.payment===id?'rgba(250,247,242,0.1)':SF};border:1px solid ${bkSel.payment===id?'rgba(250,247,242,0.15)':BD};display:flex;align-items:center;justify-content:center;flex-shrink:0">
@@ -2444,7 +2474,7 @@ function scBooking(){
       </div>`).join('')}
       <div style="font-size:10.5px;color:${G};font-weight:700;letter-spacing:0.1em;margin:16px 0 11px">NOTE FOR SPECIALIST <span style="color:${MU};font-weight:400;font-size:10px">(optional)</span></div>
       <div style="background:${CR};border:1px solid ${BD};border-radius:13px;padding:13px 15px;margin-bottom:14px">
-        <textarea placeholder="E.g. Keep the top long, skin fade the sides…" style="width:100%;font-size:13px;color:${DK};font-family:Georgia,serif;font-style:italic;height:64px;line-height:1.6" oninput="bkSel.note=this.value">${bkSel.note}</textarea>
+        <textarea placeholder="E.g. Keep the top long, skin fade the sides…" style="width:100%;font-size:13px;color:${DK};font-family:Georgia,serif;font-style:italic;height:64px;line-height:1.6" oninput="bkSel.note=this.value">${esc(bkSel.note)}</textarea>
       </div>
       <div style="display:flex;gap:9px;background:#FFF8EE;border:1px solid #E8D9B5;border-radius:12px;padding:11px 13px">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${G}" stroke-width="2" style="flex-shrink:0;margin-top:1px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -2508,7 +2538,7 @@ function scConfirmed(){
       </div>
     </div>
     <div style="font-size:10px;color:${G};font-weight:700;letter-spacing:0.16em;margin-bottom:8px">BOOKING CONFIRMED</div>
-    <div style="font-size:26px;color:${DK};font-family:Georgia,serif;line-height:1.25;margin-bottom:6px">You're all set,<br>${userProfile.name?userProfile.name.split(' ')[0]:'Guest'}.</div>
+    <div style="font-size:26px;color:${DK};font-family:Georgia,serif;line-height:1.25;margin-bottom:6px">You're all set,<br>${esc(userProfile.name?userProfile.name.split(' ')[0]:'Guest')}.</div>
     <div style="font-size:13px;color:${MU};line-height:1.7;margin-bottom:18px">Your appointment at ${biz.name}<br>has been confirmed.</div>
     <!-- ticket -->
     <div style="width:100%;background:${DK};border-radius:22px;overflow:hidden;margin-bottom:14px;flex-shrink:0">
@@ -2624,8 +2654,8 @@ function scBookings(){
                 ${ic(b.cid,18,'rgba(184,150,90,0.8)')}
               </div>
               <div>
-                <div style="font-size:15px;color:${CR};font-family:Georgia,serif">${b.business}</div>
-                <div style="font-size:10px;color:rgba(250,247,242,0.4);margin-top:1px">${b.loc}</div>
+                <div style="font-size:15px;color:${CR};font-family:Georgia,serif">${esc(b.business)}</div>
+                <div style="font-size:10px;color:rgba(250,247,242,0.4);margin-top:1px">${esc(b.loc)}</div>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:5px;background:${isUp?'rgba(184,150,90,0.18)':isDone?'rgba(76,175,125,0.18)':'rgba(255,255,255,0.07)'};border:1px solid ${isUp?'rgba(184,150,90,0.38)':isDone?'rgba(76,175,125,0.35)':'rgba(255,255,255,0.12)'};border-radius:20px;padding:5px 10px">
@@ -2635,9 +2665,9 @@ function scBookings(){
           </div>
           <!-- Body -->
           <div style="padding:14px 16px">
-            <div style="font-size:16px;color:${DK};font-family:Georgia,serif;margin-bottom:10px">${b.service}</div>
+            <div style="font-size:16px;color:${DK};font-family:Georgia,serif;margin-bottom:10px">${esc(b.service)}</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:${isUp||isDone?'13px':'0'}">
-              ${[['calendar',b.date],['clock',b.time],['scissors',b.staff],['tag',b.price]].map(([ico,val])=>`<div style="display:flex;align-items:center;gap:7px">${mic(ico,13,G)}<span style="font-size:12px;color:${MU}">${val}</span></div>`).join('')}
+              ${[['calendar',b.date],['clock',b.time],['scissors',b.staff],['tag',b.price]].map(([ico,val])=>`<div style="display:flex;align-items:center;gap:7px">${mic(ico,13,G)}<span style="font-size:12px;color:${MU}">${esc(val)}</span></div>`).join('')}
             </div>
             ${isUp?`<div style="display:flex;gap:8px;border-top:1px solid ${BD};padding-top:12px">
               <div onclick="event.stopPropagation();openBookingDetail(${b.id})" class="tap" style="flex:1;background:${SF};border:1px solid ${BD};border-radius:11px;padding:10px;text-align:center;font-size:11px;color:${DK};font-weight:600">View Details</div>
@@ -2686,11 +2716,11 @@ function scBookingDetail(){
         </div>
         <div style="padding:0 18px">
           <div style="font-size:10px;color:${G};font-weight:700;letter-spacing:0.12em;margin-bottom:6px">YOUR APPOINTMENT</div>
-          <div style="font-size:22px;color:${CR};font-family:Georgia,serif;margin-bottom:2px">${b.service}</div>
-          <div style="font-size:11px;color:rgba(250,247,242,0.38);margin-bottom:16px">at ${b.business}, ${b.loc}</div>
+          <div style="font-size:22px;color:${CR};font-family:Georgia,serif;margin-bottom:2px">${esc(b.service)}</div>
+          <div style="font-size:11px;color:rgba(250,247,242,0.38);margin-bottom:16px">at ${esc(b.business)}, ${esc(b.loc)}</div>
           <!-- Details grid -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:0">
-            ${[['DATE',b.date],['TIME',b.time],['SPECIALIST',b.staff],['PRICE',b.price],['PAYMENT',b.payment==='cash'?'Cash':'Card'],['STATUS',isUp?'Upcoming':isDone?'Completed':'Cancelled']].map(([k,v])=>`<div style="background:rgba(250,247,242,0.06);border-radius:11px;padding:11px 12px"><div style="font-size:9px;color:rgba(250,247,242,0.3);letter-spacing:0.08em;margin-bottom:4px">${k}</div><div style="font-size:12.5px;color:${k==='PRICE'?G:CR};font-weight:600">${v}</div></div>`).join('')}
+            ${[['DATE',b.date],['TIME',b.time],['SPECIALIST',b.staff],['PRICE',b.price],['PAYMENT',b.payment==='cash'?'Cash':'Card'],['STATUS',isUp?'Upcoming':isDone?'Completed':'Cancelled']].map(([k,v])=>`<div style="background:rgba(250,247,242,0.06);border-radius:11px;padding:11px 12px"><div style="font-size:9px;color:rgba(250,247,242,0.3);letter-spacing:0.08em;margin-bottom:4px">${k}</div><div style="font-size:12.5px;color:${k==='PRICE'?G:CR};font-weight:600">${esc(v)}</div></div>`).join('')}
           </div>
         </div>
         <!-- Booking ID row -->
@@ -2708,15 +2738,15 @@ function scBookingDetail(){
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${DK}" stroke-width="2"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>
         </div>
         <div style="flex:1">
-          <div style="font-size:13px;color:${DK};font-family:Georgia,serif">${b.business}</div>
-          <div style="font-size:10.5px;color:${MU};margin-top:1px">${b.loc}</div>
+          <div style="font-size:13px;color:${DK};font-family:Georgia,serif">${esc(b.business)}</div>
+          <div style="font-size:10.5px;color:${MU};margin-top:1px">${esc(b.loc)}</div>
         </div>
         <div class="tap" style="background:${SF};border:1px solid ${BD};border-radius:9px;padding:7px 12px;font-size:10px;color:${DK};font-weight:700">MAPS</div>
       </div>
       <!-- Cash reminder -->
       ${b.payment==='cash'&&isUp?`<div style="display:flex;gap:9px;background:#FFF8EE;border:1px solid #E8D9B5;border-radius:12px;padding:11px 13px;margin-bottom:10px">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${G}" stroke-width="2" style="flex-shrink:0;margin-top:1px"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>
-        <div style="font-size:11px;color:#8A7040;line-height:1.6">Remember to bring <strong>${b.price} cash</strong> to your appointment.</div>
+        <div style="font-size:11px;color:#8A7040;line-height:1.6">Remember to bring <strong>${esc(b.price)} cash</strong> to your appointment.</div>
       </div>`:''}
       <!-- Action buttons -->
       ${isUp?`
@@ -2748,7 +2778,7 @@ function scBookingDetail(){
             ${[1,2,3,4,5].map(n=>`<span onclick="setRating(${b.id},${n})" class="tap" style="font-size:30px;color:${(selectedRatings[b.id]||0)>=n?G:'#D4CDB8'};cursor:pointer;transition:color .15s">&#9733;</span>`).join('')}
           </div>
           <div style="background:${SF};border:1px solid ${BD};border-radius:11px;padding:12px 14px;margin-bottom:12px">
-            <textarea placeholder="How was your experience at ${b.business}?" style="width:100%;font-size:13px;color:${DK};font-family:Georgia,serif;font-style:italic;height:64px;line-height:1.6"></textarea>
+            <textarea placeholder="How was your experience at ${esc(b.business)}?" style="width:100%;font-size:13px;color:${DK};font-family:Georgia,serif;font-style:italic;height:64px;line-height:1.6"></textarea>
           </div>
           <div class="tap" style="background:${DK};border-radius:11px;padding:12px;text-align:center;font-size:12px;color:${CR};font-weight:700;letter-spacing:0.05em">SUBMIT REVIEW</div>
         </div>
@@ -2846,14 +2876,14 @@ function scLogin(){
         <div style="font-size:10px;color:${G};font-weight:700;letter-spacing:0.1em;margin-bottom:8px">FULL NAME</div>
         <div style="background:${SF};border:1.5px solid ${BD};border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:10px">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${MU}" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          <input type="text" placeholder="Rania Khoury" value="${authFullName.replace(/"/g,'&quot;')}" oninput="authFullName=this.value" style="flex:1;font-size:15px;color:${DK};font-family:system-ui;border:none;outline:none;background:transparent">
+          <input type="text" placeholder="Full name" value="${esc(authFullName)}" oninput="authFullName=this.value" style="flex:1;font-size:15px;color:${DK};font-family:system-ui;border:none;outline:none;background:transparent">
         </div>
       </div>`:''}
       <div style="margin-bottom:11px">
         <div style="font-size:10px;color:${G};font-weight:700;letter-spacing:0.1em;margin-bottom:8px">EMAIL</div>
         <div style="background:${SF};border:1.5px solid ${BD};border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:10px">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${MU}" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-          <input type="email" placeholder="rania@gmail.com" value="${authEmail.replace(/"/g,'&quot;')}" oninput="authEmail=this.value" style="flex:1;font-size:15px;color:${DK};font-family:system-ui;border:none;outline:none;background:transparent">
+          <input type="email" placeholder="name@example.com" value="${esc(authEmail)}" oninput="authEmail=this.value" style="flex:1;font-size:15px;color:${DK};font-family:system-ui;border:none;outline:none;background:transparent">
         </div>
       </div>
       ${!isLogin?`
@@ -2865,7 +2895,7 @@ function scLogin(){
             <span style="font-size:14px;color:${DK};font-weight:600">+961</span>
           </div>
           <div style="flex:1;background:${SF};border:1.5px solid ${BD};border-radius:14px;padding:14px 16px;display:flex;align-items:center">
-            <input type="tel" placeholder="70 123 456" value="${authPhone.replace(/"/g,'&quot;')}" oninput="authPhone=this.value" style="width:100%;font-size:15px;color:${DK};font-family:system-ui;letter-spacing:0.04em;border:none;outline:none;background:transparent">
+            <input type="tel" placeholder="70 123 456" value="${esc(authPhone)}" oninput="authPhone=this.value" style="width:100%;font-size:15px;color:${DK};font-family:system-ui;letter-spacing:0.04em;border:none;outline:none;background:transparent">
           </div>
         </div>
       </div>`:''}
@@ -2873,11 +2903,11 @@ function scLogin(){
         <div style="font-size:10px;color:${G};font-weight:700;letter-spacing:0.1em;margin-bottom:8px">PASSWORD</div>
         <div style="background:${SF};border:1.5px solid ${BD};border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:10px">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${MU}" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          <input type="password" placeholder="${isLogin?'Enter your password':'Create a password'}" value="${authPassword.replace(/"/g,'&quot;')}" oninput="authPassword=this.value" style="flex:1;font-size:15px;color:${DK};font-family:system-ui;border:none;outline:none;background:transparent">
+          <input type="password" placeholder="${isLogin?'Enter your password':'Create a password'}" value="${esc(authPassword)}" oninput="authPassword=this.value" style="flex:1;font-size:15px;color:${DK};font-family:system-ui;border:none;outline:none;background:transparent">
         </div>
       </div>
       <!-- Error message -->
-      ${authError?`<div style="background:#FFF0F0;border:1px solid #F0D0D0;border-radius:11px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#C0392B;text-align:center">${authError}</div>`:''}
+      ${authError?`<div style="background:#FFF0F0;border:1px solid #F0D0D0;border-radius:11px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#C0392B;text-align:center">${esc(authError)}</div>`:''}
       <!-- Submit -->
       <div class="tap" onclick="${isLogin?'signInCustomer()':'signUpCustomer()'}" style="background:${DK};border-radius:15px;padding:15px;text-align:center;margin-bottom:20px;box-shadow:0 6px 20px rgba(26,22,17,0.15);${authLoading?'opacity:0.6;pointer-events:none':''}">
         <span style="font-size:14px;color:${CR};font-weight:700;letter-spacing:0.05em">${authLoading?'PLEASE WAIT…':(isLogin?'LOG IN':'CREATE ACCOUNT')}</span>
@@ -2923,9 +2953,9 @@ function scProfile(){
             </div>
           </div>
           <div>
-            <div style="font-size:22px;color:${CR};font-family:Georgia,serif;margin-bottom:3px">${authUser ? (userProfile.name || authUser.email || 'User') : 'Guest'}</div>
-            <div style="font-size:11px;color:rgba(250,247,242,0.45);margin-bottom:2px">${userProfile.phone?'+961 '+userProfile.phone:''}</div>
-            <div style="font-size:11px;color:rgba(250,247,242,0.45)">${userProfile.email}</div>
+            <div style="font-size:22px;color:${CR};font-family:Georgia,serif;margin-bottom:3px">${esc(authUser ? (userProfile.name || authUser.email || 'User') : 'Guest')}</div>
+            <div style="font-size:11px;color:rgba(250,247,242,0.45);margin-bottom:2px">${esc(userProfile.phone?'+961 '+userProfile.phone:'')}</div>
+            <div style="font-size:11px;color:rgba(250,247,242,0.45)">${esc(userProfile.email)}</div>
           </div>
         </div>
         <!-- Stats row -->
@@ -2944,7 +2974,7 @@ function scProfile(){
           </div>
           <div style="flex:1;min-width:0">
             <div style="font-size:12px;color:${DK};font-weight:600">${authUser?'Logged in':'Guest mode'}</div>
-            <div style="font-size:10.5px;color:${MU};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${authUser?((authUser.email||userProfile.email||'')+(userProfile.name?' · '+userProfile.name:'')):'Sign in to sync your bookings'}</div>
+            <div style="font-size:10.5px;color:${MU};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(authUser?((authUser.email||userProfile.email||'')+(userProfile.name?' · '+userProfile.name:'')):'Sign in to sync your bookings')}</div>
           </div>
           ${authUser
             ? `<div class="tap" onclick="signOutCustomer()" style="background:#FFF5F5;border:1px solid #F0D0D0;border-radius:20px;padding:6px 13px;cursor:pointer;flex-shrink:0"><span style="font-size:11px;color:#C0392B;font-weight:600">Log Out</span></div>`
@@ -2959,7 +2989,7 @@ function scProfile(){
           </div>
           <div>
             <div style="font-size:12px;color:${DK};font-weight:600">Groomd Member</div>
-            <div style="font-size:10.5px;color:${MU}">Member since ${userProfile.joined}</div>
+            <div style="font-size:10.5px;color:${MU}">Member since ${esc(userProfile.joined)}</div>
           </div>
           <div style="margin-left:auto;background:rgba(184,150,90,0.12);border:1px solid rgba(184,150,90,0.3);border-radius:20px;padding:4px 10px">
             <span style="font-size:9px;color:${G};font-weight:700;letter-spacing:0.08em">ACTIVE</span>
@@ -2970,7 +3000,7 @@ function scProfile(){
       <div style="margin:14px 22px 0">
         <div style="font-size:10px;color:${G};font-weight:700;letter-spacing:0.12em;margin-bottom:10px">YOUR INFO</div>
         ${[['Full Name',userProfile.name||'—'],['Phone',userProfile.phone?'+961 '+userProfile.phone:'—'],['Email',userProfile.email||'—']].map(([label,val])=>`<div style="background:${CR};border:1px solid ${BD};border-radius:13px;padding:12px 15px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
-          <div><div style="font-size:9.5px;color:${MU};font-weight:600;letter-spacing:0.07em;margin-bottom:3px">${label.toUpperCase()}</div><div style="font-size:14px;color:${DK}">${val}</div></div>
+          <div><div style="font-size:9.5px;color:${MU};font-weight:600;letter-spacing:0.07em;margin-bottom:3px">${label.toUpperCase()}</div><div style="font-size:14px;color:${DK}">${esc(val)}</div></div>
           <div class="tap" onclick="showToast('Profile updated','')" style="padding:6px;cursor:pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${MU}" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></div>
         </div>`).join('')}
       </div>
@@ -3060,7 +3090,7 @@ function scWelcome(){
       </div>
     </div>
     <div style="font-size:12px;color:${G};font-weight:700;letter-spacing:0.16em;margin-bottom:10px;animation:slideUp .4s .3s both">${authMode==='signup'?'WELCOME TO GROOMD':'WELCOME BACK'}</div>
-    <div style="font-size:28px;color:${CR};font-family:Georgia,serif;margin-bottom:8px;animation:slideUp .4s .4s both">${(userProfile.name||'there').split(' ')[0]}<span style="color:${G}">.</span></div>
+    <div style="font-size:28px;color:${CR};font-family:Georgia,serif;margin-bottom:8px;animation:slideUp .4s .4s both">${esc((userProfile.name||'there').split(' ')[0])}<span style="color:${G}">.</span></div>
     <div style="font-size:13px;color:rgba(250,247,242,0.4);line-height:1.7;animation:slideUp .4s .5s both">Lebanon's finest grooming,<br>at your fingertips.</div>
     <div style="margin-top:32px;display:flex;gap:7px;animation:fadeIn .5s .8s both">
       <div style="width:5px;height:5px;border-radius:50%;background:${G};animation:pulse 1.6s .1s infinite"></div>
@@ -3163,8 +3193,8 @@ function distanceToBiz(biz){
   return d<0.1?'0.1 km':d<10?d.toFixed(1)+' km':Math.round(d)+' km';
 }
 function getLocation(){
-  if(!navigator.geolocation){showToast('Pick your area below','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>');return;}
-  showToast('Detecting location…','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>');
+  if(!navigator.geolocation){showToast('Pick your area below',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>'));return;}
+  showToast('Detecting location…',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>'));
   navigator.geolocation.getCurrentPosition(
     pos=>{
       const {latitude:lat,longitude:lng}=pos.coords;
@@ -3172,18 +3202,18 @@ function getLocation(){
       AREAS.forEach(a=>{const d=haversine(lat,lng,a.lat,a.lng);if(d<minD){minD=d;closest=a;}});
       if(closest){
         userLocation={area:closest.name,label:areaLabel(closest.name),lat:closest.lat,lng:closest.lng};
-        showToast('Location set to '+closest.name,'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>');
+        showToast('Location set to '+closest.name,trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>'));
       }
       S.screen='home';render();
     },
-    ()=>{showToast('Could not detect — pick your area below','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>');},
+    ()=>{showToast('Could not detect — pick your area below',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>'));},
     {timeout:8000}
   );
 }
 function selectArea(name){
   const a=AREAS.find(x=>x.name===name);
   if(a) userLocation={area:a.name,label:areaLabel(a.name),lat:a.lat,lng:a.lng};
-  showToast('Location set to '+name,'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>');
+  showToast('Location set to '+name,trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>'));
   S.screen='home';render();
 }
 function skipLocation(){
@@ -3434,7 +3464,7 @@ function confirmMapLocation(){
     userLocation={area:'Lebanon',label:'Lebanon',lat:_pickedLat,lng:_pickedLng};
   }
   if(_glamoMap){_glamoMap.remove();_glamoMap=null;}
-  showToast('Location saved — '+userLocation.area,'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>');
+  showToast('Location saved — '+userLocation.area,trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>'));
   S.screen='home';render();
 }
 
@@ -3583,7 +3613,7 @@ function scSearch(){
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
         <input id="srch" type="text" placeholder="Search businesses, services, specialists…"
           style="flex:1;font-size:13px;color:${DK};font-family:Georgia,serif;font-style:italic"
-          value="${S.searchQ}" oninput="updateSearch(this.value)">
+          value="${esc(S.searchQ)}" oninput="updateSearch(this.value)">
         ${S.searchQ?`<div class="tap" onclick="updateSearch('')"
           style="width:22px;height:22px;border-radius:50%;background:${BD};cursor:pointer;
           display:flex;align-items:center;justify-content:center;flex-shrink:0">
@@ -3898,7 +3928,7 @@ async function bkNext(){
       const ok = await addBooking();
       if(ok === false){ return; }
       bkStep=6;
-      setTimeout(()=>showToast(rewardUnlocked?'Reward unlocked! ★':'+'+lastEarnedPoints+' points earned','<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'),400);
+      setTimeout(()=>showToast(rewardUnlocked?'Reward unlocked! ★':'+'+lastEarnedPoints+' points earned',trustedIcon('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>')),400);
       render();
       return;
     }
